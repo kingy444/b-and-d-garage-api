@@ -1,0 +1,291 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# B&D Garage Door — Home Assistant configuration
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Prerequisites:
+#   1. Install the HA iOS Companion App on your iPhone and enable location.
+#   2. In HA → Settings → People, confirm your person entity names
+#      (e.g. person.alice, person.bob).
+#   3. The automations use zone.home (the default HA home zone) for all location
+#      triggers. If you want finer control you can create separate zones:
+#        zone.home_arrival  — larger radius (~180 m), triggers door open
+#        zone.home_departure — smaller radius (~100 m), triggers door close
+#      and substitute them in the zone trigger blocks below.
+#   4. Set the API key secret (same value as GARAGE_API_KEY in your .env):
+#        Settings → Helpers → Add helper → Text → name: garage_api_key
+#      Or add to secrets.yaml:
+#        garage_api_key: your-key-here
+#   5. Find your notify targets in Developer Tools → Actions → search "notify".
+#      They follow the pattern notify.mobile_app_<device_name>.
+#   6. Find your SSID sensor names in Developer Tools → States → search "ssid".
+#   7. Add the sections below into the relevant parts of your configuration.yaml,
+#      or use packages/ if you prefer a modular layout.
+#
+# Replace all <placeholders> with values from your own HA instance.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── REST commands ─────────────────────────────────────────────────────────────
+rest_command:
+  garage_open:
+    url: "http://<garage-api-host>:<port>/open"
+    method: POST
+    headers:
+      X-API-Key: !secret garage_api_key
+
+  garage_close:
+    url: "http://<garage-api-host>:<port>/close"
+    method: POST
+    headers:
+      X-API-Key: !secret garage_api_key
+
+
+# ── REST sensor — polls door state every 30 s ─────────────────────────────────
+# Gives you a sensor you can use in dashboards and automations.
+sensor:
+  - platform: rest
+    name: Garage Door
+    unique_id: garage_door_state
+    resource: "http://<garage-api-host>:<port>/status"
+    method: GET
+    headers:
+      X-API-Key: !secret garage_api_key
+    value_template: "{{ value_json.state }}"
+    json_attributes:
+      - position
+      - rate
+    scan_interval: 30
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Automations
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Replace the following placeholders throughout:
+#
+#   <person_1>         — e.g. person.alice
+#   <person_2>         — e.g. person.bob
+#   <notify_1>         — e.g. notify.mobile_app_alices_iphone
+#   <notify_2>         — e.g. notify.mobile_app_bobs_iphone
+#   <ssid_sensor_1>    — e.g. sensor.alices_iphone_ssid
+#   <ssid_sensor_2>    — e.g. sensor.bobs_iphone_ssid
+#   <home_wifi_ssid>   — the SSID name of your home WiFi network
+#
+automation:
+
+  # ── 1. Arrive home → open garage ──────────────────────────────────────────
+  - id: garage_open_on_arrival
+    alias: "Garage: Open on arrival"
+    description: >
+      Opens the garage when person 1 or person 2 arrives home (if closed).
+      Triggered by zone entry OR home WiFi connecting.
+      WiFi trigger is guarded — only fires if the person was away, preventing
+      the door opening when WiFi is toggled while already at home.
+      10-minute cooldown prevents GPS jitter re-triggers.
+    trigger:
+      - id: zone_person1
+        platform: zone
+        entity_id: <person_1>
+        zone: zone.home
+        event: enter
+      - id: zone_person2
+        platform: zone
+        entity_id: <person_2>
+        zone: zone.home
+        event: enter
+      - id: wifi_person1
+        platform: state
+        entity_id: <ssid_sensor_1>
+        to: "<home_wifi_ssid>"
+      - id: wifi_person2
+        platform: state
+        entity_id: <ssid_sensor_2>
+        to: "<home_wifi_ssid>"
+    variables:
+      notify_target: >
+        {% if trigger.id in ['zone_person1', 'wifi_person1'] %}
+          <notify_1>
+        {% else %}
+          <notify_2>
+        {% endif %}
+      person_entity: >
+        {% if trigger.id in ['zone_person1', 'wifi_person1'] %}
+          <person_1>
+        {% else %}
+          <person_2>
+        {% endif %}
+    condition:
+      - condition: state
+        entity_id: sensor.garage_door
+        state: "closed"
+      - condition: template
+        value_template: >
+          {{ (as_timestamp(now()) - as_timestamp(
+               states.automation.garage_open_on_arrival.attributes.last_triggered
+               | default('1970-01-01', true))) > 600 }}
+      # WiFi trigger only: person must have been away (not_home) before connecting
+      - condition: template
+        value_template: >
+          {% if trigger.id in ['wifi_person1', 'wifi_person2'] %}
+            {{ states(person_entity) == 'not_home' }}
+          {% else %}
+            true
+          {% endif %}
+    action:
+      - service: rest_command.garage_open
+      - service: "{{ notify_target }}"
+        data:
+          title: "Garage"
+          message: "Door opening — welcome home."
+
+
+  # ── 2. Leave home → close garage + confirm ────────────────────────────────
+  - id: garage_close_on_departure
+    alias: "Garage: Close on departure"
+    description: >
+      Closes the garage when person 1 or person 2 leaves the departure zone or
+      disconnects from home WiFi. Only acts if the door is not already closed.
+      WiFi disconnect waits 5 s to absorb momentary drops before acting.
+      Notifies whoever triggered it with the confirmed outcome.
+    trigger:
+      - id: zone_person1
+        platform: zone
+        entity_id: <person_1>
+        zone: zone.home
+        event: leave
+      - id: zone_person2
+        platform: zone
+        entity_id: <person_2>
+        zone: zone.home
+        event: leave
+      - id: wifi_person1
+        platform: state
+        entity_id: <ssid_sensor_1>
+        from: "<home_wifi_ssid>"
+      - id: wifi_person2
+        platform: state
+        entity_id: <ssid_sensor_2>
+        from: "<home_wifi_ssid>"
+    variables:
+      notify_target: >
+        {% if trigger.id in ['zone_person1', 'wifi_person1'] %}
+          <notify_1>
+        {% else %}
+          <notify_2>
+        {% endif %}
+      ssid_sensor: >
+        {% if trigger.id == 'wifi_person1' %}
+          <ssid_sensor_1>
+        {% else %}
+          <ssid_sensor_2>
+        {% endif %}
+    condition:
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.garage_door
+            state: "closed"
+    action:
+      # For WiFi triggers: wait 5 s to absorb momentary drops
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.id in ['wifi_person1', 'wifi_person2'] }}"
+            sequence:
+              - delay:
+                  seconds: 5
+      # For WiFi triggers: confirm still disconnected after wait
+      - condition: template
+        value_template: >
+          {% if trigger.id in ['wifi_person1', 'wifi_person2'] %}
+            {{ states(ssid_sensor) != '<home_wifi_ssid>' }}
+          {% else %}
+            true
+          {% endif %}
+      - service: rest_command.garage_close
+      - service: "{{ notify_target }}"
+        data:
+          title: "Garage"
+          message: "Door closing…"
+      - delay:
+          seconds: 20
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.garage_door
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.garage_door
+            state: "closed"
+      - service: "{{ notify_target }}"
+        data:
+          title: "Garage ⚠️"
+          message: >
+            Door may not have closed — current state is
+            {{ states('sensor.garage_door') }}.
+            Please check.
+
+
+  # ── 3. Nobody home safety net ─────────────────────────────────────────────
+  - id: garage_close_nobody_home
+    alias: "Garage: Close if nobody home and door open"
+    description: >
+      Safety net — triggers when either person leaves home_departure zone.
+      Waits 2 minutes, then checks if both are away and door is still open.
+      If so, closes the door and notifies both people.
+    trigger:
+      - platform: zone
+        entity_id: <person_1>
+        zone: zone.home
+        event: leave
+      - platform: zone
+        entity_id: <person_2>
+        zone: zone.home
+        event: leave
+    action:
+      - delay:
+          minutes: 2
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.garage_door
+            state: "closed"
+      - condition: state
+        entity_id: <person_1>
+        state: "not_home"
+      - condition: state
+        entity_id: <person_2>
+        state: "not_home"
+      - service: rest_command.garage_close
+      - service: <notify_1>
+        data:
+          title: "Garage"
+          message: "Nobody home — door was open, closing now."
+      - service: <notify_2>
+        data:
+          title: "Garage"
+          message: "Nobody home — door was open, closing now."
+      - delay:
+          seconds: 20
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.garage_door
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: sensor.garage_door
+            state: "closed"
+      - service: <notify_1>
+        data:
+          title: "Garage ⚠️"
+          message: >
+            Door may not have closed — current state is
+            {{ states('sensor.garage_door') }}.
+            Please check.
+      - service: <notify_2>
+        data:
+          title: "Garage ⚠️"
+          message: >
+            Door may not have closed — current state is
+            {{ states('sensor.garage_door') }}.
+            Please check.

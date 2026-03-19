@@ -1,0 +1,11 @@
+credentials.json
+.env
+hub.crt
+*.xapk
+apk-out/
+iphone_app/
+iphone_extract/
+__pycache__/
+*.pyc
+.claude/
+.vscode/

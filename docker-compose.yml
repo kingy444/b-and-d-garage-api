@@ -1,0 +1,17 @@
+services:
+  garage:
+    build: .
+    container_name: garage-api
+    restart: unless-stopped
+    ports:
+      - "20000:8080"
+    environment:
+      - TZ=Australia/Sydney
+      - GARAGE_API_KEY=${GARAGE_API_KEY}
+      - GARAGE_HUBIP=${GARAGE_HUBIP}
+      - GARAGE_PHONEID=${GARAGE_PHONEID}
+      - GARAGE_PHONEPASSWORD=${GARAGE_PHONEPASSWORD}
+      - GARAGE_PHONESECRET=${GARAGE_PHONESECRET}
+      - GARAGE_USERPASSWORD=${GARAGE_USERPASSWORD}
+      - GARAGE_HUBID=${GARAGE_HUBID}
+      - GARAGE_ACTIONDEVICEID=${GARAGE_ACTIONDEVICEID}
