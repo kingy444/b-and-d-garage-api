@@ -7,5 +7,7 @@ iphone_app/
 iphone_extract/
 __pycache__/
 *.pyc
+diag_probe.py
 .claude/
 .vscode/
+garage_logs.txt

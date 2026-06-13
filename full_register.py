@@ -715,7 +715,8 @@ def main():
         "phoneId":          phone_id,
         "phonePassword":    phone_pw,
         "phoneKey":         rsa_priv_b64,
-        "phoneSecret":      new_phone_secret,
+        "phoneSecret":      phone_secret,     # ORIGINAL — app protocol / runtime
+        "phoneSecretEcdh":  new_phone_secret, # ECDH-derived — SDK protocol only
         "sdkPhonePassword": SDK_PHONE_PW,
         "userPassword":     user_pw,
         "userId":           user_id,
@@ -737,8 +738,10 @@ def main():
         print("\nSkipping setUserPassword — no session key")
 
     # Step 6: fallback device discovery via app protocol (if SDK steps didn't yield actionDeviceId)
+    # NOTE: discover_devices talks the APP protocol (8989), so it must use the ORIGINAL
+    # phone_secret — not the ECDH new_phone_secret (which is SDK-only).
     if not action_device_id:
-        devices = discover_devices(hub_id, phone_id, phone_pw, new_phone_secret, user_pw)
+        devices = discover_devices(hub_id, phone_id, phone_pw, phone_secret, user_pw)
         if devices:
             if len(devices) == 1:
                 action_device_id = devices[0][1]
@@ -792,7 +795,8 @@ def main():
         "phoneId":          phone_id,
         "phonePassword":    phone_pw,         # app/connect password
         "phoneKey":         rsa_priv_b64,     # RSA-2048 PKCS8 DER base64
-        "phoneSecret":      new_phone_secret, # ECDH-derived (or original if ECDH failed)
+        "phoneSecret":      phone_secret,     # ORIGINAL cloud-reg secret — app protocol (8989); used by app.py
+        "phoneSecretEcdh":  new_phone_secret, # ECDH-derived — SDK protocol (8991) only; not used at runtime
         "sdkPhonePassword": SDK_PHONE_PW,     # sdk/auth password (newPhonePassword from v3migrate)
         "userPassword":     user_pw,
         "userId":           user_id,
@@ -818,7 +822,11 @@ def main():
         f"GARAGE_HUBIP={hub_ip}\n"
         f"GARAGE_PHONEID={phone_id}\n"
         f"GARAGE_PHONEPASSWORD={phone_pw}\n"
-        f"GARAGE_PHONESECRET={new_phone_secret}\n"
+        # App protocol (8989) signs/encrypts with the ORIGINAL cloud-registration
+        # secret. The ECDH-derived secret from v3migrate is for the SDK protocol
+        # (8991) ONLY — using it here makes the hub reject every signed op with
+        # code 16 "Rejected due to security error". app.py never does SDK ops.
+        f"GARAGE_PHONESECRET={phone_secret}\n"
         f"GARAGE_USERPASSWORD={user_pw}\n"
         f"GARAGE_HUBID={hub_id}\n"
         f"GARAGE_ACTIONDEVICEID={action_device_id}\n"
